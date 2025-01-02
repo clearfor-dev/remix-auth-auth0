@@ -3,6 +3,14 @@
 	"include": ["src/**/*.ts"],
 	"exclude": ["src/**/*.test.ts"],
 	"compilerOptions": {
-		"outDir": "./build"
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"declarationDir": "./build",
+		"moduleResolution": "bundler",
+		"module": "ESNext",
+		"outDir": "./build",
+		"target": "ESNext"
 	}
 }

@@ -1,8 +1,6 @@
-import { ObjectParser } from "@edgefirst-dev/data/parser";
 import { type SetCookieInit } from "@mjackson/headers";
 import {
-	CodeChallengeMethod,
-	OAuth2Client,
+	Auth0,
 	OAuth2RequestError,
 	type OAuth2Tokens,
 	generateCodeVerifier,
@@ -10,43 +8,137 @@ import {
 } from "arctic";
 import createDebug from "debug";
 import { Strategy } from "remix-auth/strategy";
+
 import { redirect } from "./lib/redirect.js";
 import { StateStore } from "./lib/store.js";
 
+export { OAuth2RequestError };
+
 type URLConstructor = ConstructorParameters<typeof URL>[0];
 
-const debug = createDebug("OAuth2Strategy");
+const debug = createDebug("Auth0Strategy");
 
-const WELL_KNOWN = ".well-known/openid-configuration";
+/**
+ * @see https://auth0.com/docs/get-started/apis/scopes/openid-connect-scopes#standard-claims
+ */
+type Auth0Scope = "openid" | "profile" | "email";
 
-export { OAuth2RequestError, CodeChallengeMethod };
+const defaultScopes: Auth0Scope[] = ["openid", "profile", "email"];
+const Auth0StrategyScopeSeperator = " ";
 
-export class OAuth2Strategy<User> extends Strategy<
-	User,
-	OAuth2Strategy.VerifyOptions
-> {
-	override name = "oauth2";
+export type Auth0Options = {
+	/**
+	 * The name of the cookie used to keep state and code verifier around.
+	 *
+	 * The OAuth2 flow requires generating a random state and code verifier, and
+	 * then checking that the state matches when the user is redirected back to
+	 * the application. This is done to prevent CSRF attacks.
+	 *
+	 * The state and code verifier are stored in a cookie, and this option
+	 * allows you to customize the name of that cookie if needed.
+	 * @default "oauth2"
+	 */
+	cookie?: string | (Omit<SetCookieInit, "value"> & { name: string });
 
-	protected client: OAuth2Client;
+	/**
+	 * Auth0 domain
+	 */
+	domain: string;
+	/**
+	 * This is the Client ID of your application, provided to you by the Identity
+	 * Provider you're using to authenticate users.
+	 */
+	clientId: string;
+
+	/**
+	 * This is the Client Secret of your application, provided to you by the
+	 * Identity Provider you're using to authenticate users.
+	 */
+	clientSecret: string;
+
+	/**
+	 * The URL of your application where the Identity Provider will redirect the
+	 * user after they've logged in or authorized your application.
+	 */
+	redirectURI: URLConstructor;
+
+	/**
+	 * The scopes you want to request from the Identity Provider, this is a list
+	 * of strings that represent the permissions you want to request from the
+	 * user.
+	 *
+	 * @see https://auth0.com/docs/get-started/apis/scopes/openid-connect-scopes#standard-claims
+	 *
+	 * Default: ["openid", "profile", "email"]
+	 */
+	scopes?: Auth0Scope[];
+};
+
+export interface Auth0Profile {
+	id: string;
+	displayName?: string;
+	name?: {
+		familyName?: string;
+		givenName?: string;
+		middleName?: string;
+	};
+	emails?: { value: string }[];
+	photos?: { value: string }[];
+	organizationId?: string;
+	organizationName?: string;
+	_json: Auth0UserInfo;
+}
+
+export interface Auth0UserInfo {
+	sub: string;
+	name?: string;
+	family_name?: string;
+	given_name?: string;
+	middle_name?: string;
+	nickname?: string;
+	profile?: string;
+	picture?: string;
+	website?: string;
+	email?: string;
+	email_verified: boolean;
+	org_id?: string;
+	org_name?: string;
+}
+
+interface VerifyOptions {
+	/** The request that triggered the verification flow */
+	request: Request;
+	/** The OAuth2 tokens retrivied from the identity provider */
+	tokens: OAuth2Tokens;
+}
+
+export class Auth0Strategy<User> extends Strategy<User, VerifyOptions> {
+	override name = "auth0";
+
+	private client: Auth0;
+	private userInfoURL: string;
 
 	constructor(
-		protected options: OAuth2Strategy.ConstructorOptions,
-		verify: Strategy.VerifyFunction<User, OAuth2Strategy.VerifyOptions>,
+		protected options: Auth0Options,
+		verify: Strategy.VerifyFunction<User, VerifyOptions>,
 	) {
 		super(verify);
 
-		this.client = new OAuth2Client(
+		this.userInfoURL = `https://${options.domain}/userinfo`;
+
+		this.client = new Auth0(
+			options.domain,
 			options.clientId,
 			options.clientSecret,
-			options.redirectURI?.toString() ?? null,
+			options.redirectURI.toString(),
 		);
 	}
 
 	private get cookieName() {
 		if (typeof this.options.cookie === "string") {
-			return this.options.cookie || "oauth2";
+			return this.options.cookie || "auth0";
 		}
-		return this.options.cookie?.name ?? "oauth2";
+		return this.options.cookie?.name ?? "auth0";
 	}
 
 	private get cookieOptions() {
@@ -76,10 +168,7 @@ export class OAuth2Strategy<User> extends Strategy<
 			debug("State", state);
 			debug("Code verifier", codeVerifier);
 
-			url.search = this.authorizationParams(
-				url.searchParams,
-				request,
-			).toString();
+			url.search = this.authorizationParams(url.searchParams).toString();
 
 			debug("Authorization URL", url.toString());
 
@@ -116,7 +205,7 @@ export class OAuth2Strategy<User> extends Strategy<
 		}
 
 		debug("Validating authorization code");
-		let tokens = await this.validateAuthorizationCode(code, codeVerifier);
+		let tokens = await this.validateAuthorizationCode(code);
 
 		debug("Verifying the user profile");
 		let user = await this.verify({ request, tokens });
@@ -129,23 +218,16 @@ export class OAuth2Strategy<User> extends Strategy<
 		let state = generateState();
 		let codeVerifier = generateCodeVerifier();
 
-		let url = this.client.createAuthorizationURLWithPKCE(
-			this.options.authorizationEndpoint.toString(),
+		let url = this.client.createAuthorizationURL(
 			state,
-			this.options.codeChallengeMethod ?? CodeChallengeMethod.S256,
-			codeVerifier,
-			this.options.scopes ?? [],
+			this.options.scopes ?? defaultScopes,
 		);
 
 		return { state, codeVerifier, url };
 	}
 
-	protected validateAuthorizationCode(code: string, codeVerifier: string) {
-		return this.client.validateAuthorizationCode(
-			this.options.tokenEndpoint.toString(),
-			code,
-			codeVerifier,
-		);
+	protected validateAuthorizationCode(code: string) {
+		return this.client.validateAuthorizationCode(code);
 	}
 
 	/**
@@ -157,10 +239,7 @@ export class OAuth2Strategy<User> extends Strategy<
 	 * strategies can override this function in order to populate these
 	 * parameters as required by the provider.
 	 */
-	protected authorizationParams(
-		params: URLSearchParams,
-		request: Request,
-	): URLSearchParams {
+	protected authorizationParams(params: URLSearchParams): URLSearchParams {
 		return new URLSearchParams(params);
 	}
 
@@ -176,11 +255,7 @@ export class OAuth2Strategy<User> extends Strategy<
 	 * ```
 	 */
 	public refreshToken(refreshToken: string) {
-		return this.client.refreshAccessToken(
-			this.options.tokenEndpoint.toString(),
-			refreshToken,
-			this.options.scopes ?? [],
-		);
+		return this.client.refreshAccessToken(refreshToken);
 	}
 
 	/**
@@ -196,164 +271,56 @@ export class OAuth2Strategy<User> extends Strategy<
 	 * ```
 	 */
 	public revokeToken(token: string) {
-		let endpoint = this.options.tokenRevocationEndpoint;
-		if (!endpoint) throw new Error("Token revocation endpoint is not set.");
-		return this.client.revokeToken(endpoint.toString(), token);
+		return this.client.revokeToken(token);
 	}
 
-	/**
-	 * Discover the OAuth2 issuer and create a new OAuth2Strategy instance from
-	 * the OIDC configuration that is returned.
-	 *
-	 * This method will fetch the OIDC configuration from the issuer and create a
-	 * new OAuth2Strategy instance with the provided options and verify function.
-	 *
-	 * @param uri The URI of the issuer, this can be a full URL or just the domain
-	 * @param options The rest of the options to pass to the OAuth2Strategy constructor, clientId, clientSecret, redirectURI, and scopes are required.
-	 * @param verify The verify function to use with the OAuth2Strategy instance
-	 * @returns A new OAuth2Strategy instance
-	 * @example
-	 * ```ts
-	 * let strategy = await OAuth2Strategy.discover(
-	 *   "https://accounts.google.com",
-	 *   {
-	 *     clientId: "your-client-id",
-	 *     clientSecret: "your-client-secret",
-	 *     redirectURI: "https://your-app.com/auth/callback",
-	 *     scopes: ["openid", "email", "profile"],
-	 *   },
-	 *   async ({ tokens }) => {
-	 *     return getUserProfile(tokens.access_token);
-	 *   },
-	 * );
-	 */
-	static async discover<U, M extends OAuth2Strategy<U> = OAuth2Strategy<U>>(
-		this: new (
-			options: OAuth2Strategy.ConstructorOptions,
-			verify: Strategy.VerifyFunction<U, OAuth2Strategy.VerifyOptions>,
-		) => M,
-		uri: string | URL,
-		options: Pick<
-			OAuth2Strategy.ConstructorOptions,
-			"clientId" | "clientSecret" | "cookie" | "redirectURI" | "scopes"
-		> &
-			Partial<
-				Omit<
-					OAuth2Strategy.ConstructorOptions,
-					"clientId" | "clientSecret" | "cookie" | "redirectURI" | "scopes"
-				>
-			>,
-		verify: Strategy.VerifyFunction<U, OAuth2Strategy.VerifyOptions>,
-	) {
-		// Parse the URI into a URL object
-		let url = new URL(uri);
+	public async userProfile(accessToken: string): Promise<Auth0Profile> {
+		let response = await fetch(this.userInfoURL, {
+			headers: { Authorization: `Bearer ${accessToken}` },
+		});
+		let data: Auth0UserInfo = await response.json();
 
-		if (!url.pathname.includes("well-known")) {
-			// Add the well-known path to the URL if it's not already there
-			url.pathname = url.pathname.endsWith("/")
-				? `${url.pathname}${WELL_KNOWN}`
-				: `${url.pathname}/${WELL_KNOWN}`;
+		let profile: Auth0Profile = {
+			id: data.sub,
+			_json: data,
+		};
+
+		if (data.name) {
+			profile.displayName = data.name;
 		}
 
-		// Fetch the metadata from the issuer and validate it
-		let response = await fetch(url, {
-			headers: { Accept: "application/json" },
-		});
+		if (data.family_name || data.given_name || data.middle_name) {
+			profile.name = {};
 
-		// If the response is not OK, throw an error
-		if (!response.ok) throw new Error(`Failed to discover issuer at ${url}`);
+			if (data.family_name) {
+				profile.name.familyName = data.family_name;
+			}
 
-		// Parse the response body
-		let parser = new ObjectParser(await response.json());
+			if (data.given_name) {
+				profile.name.givenName = data.given_name;
+			}
 
-		// biome-ignore lint/complexity/noThisInStatic: This is need for subclasses
-		return new this(
-			{
-				authorizationEndpoint: new URL(parser.string("authorization_endpoint")),
-				tokenEndpoint: new URL(parser.string("token_endpoint")),
-				tokenRevocationEndpoint: parser.has("revocation_endpoint")
-					? new URL(parser.string("revocation_endpoint"))
-					: undefined,
-				codeChallengeMethod: parser.has("code_challenge_methods_supported")
-					? parser.array("code_challenge_methods_supported").includes("S256")
-						? CodeChallengeMethod.S256
-						: CodeChallengeMethod.Plain
-					: undefined,
-				...options,
-			},
-			verify,
-		);
-	}
-}
+			if (data.middle_name) {
+				profile.name.middleName = data.middle_name;
+			}
+		}
 
-export namespace OAuth2Strategy {
-	export interface VerifyOptions {
-		/** The request that triggered the verification flow */
-		request: Request;
-		/** The OAuth2 tokens retrivied from the identity provider */
-		tokens: OAuth2Tokens;
-	}
+		if (data.email) {
+			profile.emails = [{ value: data.email }];
+		}
 
-	export interface ConstructorOptions {
-		/**
-		 * The name of the cookie used to keep state and code verifier around.
-		 *
-		 * The OAuth2 flow requires generating a random state and code verifier, and
-		 * then checking that the state matches when the user is redirected back to
-		 * the application. This is done to prevent CSRF attacks.
-		 *
-		 * The state and code verifier are stored in a cookie, and this option
-		 * allows you to customize the name of that cookie if needed.
-		 * @default "oauth2"
-		 */
-		cookie?: string | (Omit<SetCookieInit, "value"> & { name: string });
+		if (data.picture) {
+			profile.photos = [{ value: data.picture }];
+		}
 
-		/**
-		 * This is the Client ID of your application, provided to you by the Identity
-		 * Provider you're using to authenticate users.
-		 */
-		clientId: string;
-		/**
-		 * This is the Client Secret of your application, provided to you by the
-		 * Identity Provider you're using to authenticate users.
-		 */
-		clientSecret: string | null;
+		if (data.org_id) {
+			profile.organizationId = data.org_id;
+		}
 
-		/**
-		 * The endpoint the Identity Provider asks you to send users to log in, or
-		 * authorize your application.
-		 */
-		authorizationEndpoint: URLConstructor;
-		/**
-		 * The endpoint the Identity Provider uses to let's you exchange an access
-		 * code for an access and refresh token.
-		 */
-		tokenEndpoint: URLConstructor;
-		/**
-		 * The URL of your application where the Identity Provider will redirect the
-		 * user after they've logged in or authorized your application.
-		 */
-		redirectURI: URLConstructor | null;
+		if (data.org_name) {
+			profile.organizationName = data.org_name;
+		}
 
-		/**
-		 * The endpoint the Identity Provider uses to revoke an access or refresh
-		 * token, this can be useful to log out the user.
-		 */
-		tokenRevocationEndpoint?: URLConstructor;
-
-		/**
-		 * The scopes you want to request from the Identity Provider, this is a list
-		 * of strings that represent the permissions you want to request from the
-		 * user.
-		 */
-		scopes?: string[];
-
-		/**
-		 * The code challenge method to use when sending the authorization request.
-		 * This is used when the Identity Provider requires a code challenge to be
-		 * sent with the authorization request.
-		 * @default "CodeChallengeMethod.S256"
-		 */
-		codeChallengeMethod?: CodeChallengeMethod;
+		return profile;
 	}
 }

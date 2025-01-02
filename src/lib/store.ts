@@ -1,7 +1,7 @@
 import { Cookie, SetCookie, type SetCookieInit } from "@mjackson/headers";
 
 /**
- * This class is used to store the state and code verifier for the OAuth2 flow.
+ * This class is used to store the state and code verifier for the auth0 flow.
  *
  * If the user is redirected to the authorization endpoint, we need to store the
  * state and code verifier in a cookie so we can check that the state matches
@@ -78,7 +78,7 @@ export class StateStore {
 	}
 
 	toSetCookie(
-		cookieName = "oauth2",
+		cookieName = "auth0",
 		options: Omit<SetCookieInit, "value"> = {},
 	) {
 		let id = crypto.randomUUID();
@@ -97,7 +97,7 @@ export class StateStore {
 	 * Create a new instance from a Request object by getting the store from a
 	 * cookie with the given name.
 	 */
-	static fromRequest(request: Request, cookieName = "oauth2") {
+	static fromRequest(request: Request, cookieName = "auth0") {
 		let cookie = new Cookie(request.headers.get("cookie") ?? "");
 
 		let params = new URLSearchParams();

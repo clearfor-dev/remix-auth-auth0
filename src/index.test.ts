@@ -10,11 +10,11 @@ import {
 import { Cookie, SetCookie } from "@mjackson/headers";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/native";
-import { OAuth2Strategy } from ".";
+import { type Auth0Options, Auth0Strategy } from ".";
 import { StateStore } from "./lib/store";
 
 const server = setupServer(
-	http.post("https://example.app/token", async () => {
+	http.post("https://example.app/oauth/token", async () => {
 		return HttpResponse.json({
 			access_token: "mocked",
 			expires_in: 3600,
@@ -25,17 +25,16 @@ const server = setupServer(
 	}),
 );
 
-describe(OAuth2Strategy.name, () => {
+describe(Auth0Strategy.name, () => {
 	let verify = mock();
 
 	let options = Object.freeze({
-		authorizationEndpoint: "https://example.app/authorize",
-		tokenEndpoint: "https://example.app/token",
+		domain: "example.app",
 		clientId: "MY_CLIENT_ID",
 		clientSecret: "MY_CLIENT_SECRET",
 		redirectURI: "https://example.com/callback",
-		scopes: ["user:email", "user:profile"],
-	} satisfies OAuth2Strategy.ConstructorOptions);
+		scopes: ["email", "profile"],
+	} satisfies Auth0Options);
 
 	interface User {
 		id: string;
@@ -53,13 +52,13 @@ describe(OAuth2Strategy.name, () => {
 		server.close();
 	});
 
-	test("should have the name `oauth2`", () => {
-		let strategy = new OAuth2Strategy<User>(options, verify);
-		expect(strategy.name).toBe("oauth2");
+	test("should have the name `auth0`", () => {
+		let strategy = new Auth0Strategy<User>(options, verify);
+		expect(strategy.name).toBe("auth0");
 	});
 
 	test("redirects to authorization url if there's no state", async () => {
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let request = new Request("https://remix.auth/login");
 
@@ -78,11 +77,10 @@ describe(OAuth2Strategy.name, () => {
 		expect(redirect.searchParams.has("state")).toBeTruthy();
 		expect(redirect.searchParams.get("scope")).toBe(options.scopes.join(" "));
 		expect(params.get("state")).toBe(redirect.searchParams.get("state"));
-		expect(redirect.searchParams.get("code_challenge_method")).toBe("S256");
 	});
 
 	test("throws if there's no state in the session", async () => {
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let request = new Request(
 			"https://example.com/callback?state=random-state&code=random-code",
@@ -94,13 +92,13 @@ describe(OAuth2Strategy.name, () => {
 	});
 
 	test("throws if the state in the url doesn't match the state in the session", async () => {
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let store = new StateStore();
 		store.set("random-state", "random-code-verifier");
 
 		let cookie = new Cookie();
-		cookie.set("oauth2", store.toString());
+		cookie.set("auth0", store.toString());
 
 		let request = new Request(
 			"https://example.com/callback?state=another-state&code=random-code",
@@ -113,7 +111,7 @@ describe(OAuth2Strategy.name, () => {
 	});
 
 	test("calls verify with the tokens and request", async () => {
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let store = new StateStore();
 		store.set("random-state", "random-code-verifier");
@@ -135,7 +133,7 @@ describe(OAuth2Strategy.name, () => {
 		let user = { id: "123" };
 		verify.mockResolvedValueOnce(user);
 
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let store = new StateStore();
 		store.set("random-state", "random-code-verifier");
@@ -151,74 +149,9 @@ describe(OAuth2Strategy.name, () => {
 		expect(strategy.authenticate(request)).resolves.toEqual(user);
 	});
 
-	test("discovers provider configuration", async () => {
-		let handler = mock().mockImplementationOnce(() =>
-			HttpResponse.json({
-				authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-				token_endpoint: "https://oauth2.googleapis.com/token",
-				revocation_endpoint: "https://oauth2.googleapis.com/revoke",
-				code_challenge_methods_supported: ["plain", "S256"],
-			}),
-		);
-
-		server.use(
-			http.get(
-				"https://accounts.google.com/.well-known/openid-configuration",
-				handler,
-			),
-		);
-
-		await OAuth2Strategy.discover(
-			"https://accounts.google.com",
-			{
-				clientId: options.clientId,
-				clientSecret: options.clientSecret,
-				redirectURI: options.redirectURI,
-				scopes: options.scopes,
-			},
-			verify,
-		);
-
-		expect(handler).toHaveBeenCalledTimes(1);
-	});
-
-	test("discover in a subclass returns the subclass", async () => {
-		class SubStrategy<U> extends OAuth2Strategy<U> {}
-
-		let handler = mock().mockImplementationOnce(() =>
-			HttpResponse.json({
-				authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-				token_endpoint: "https://oauth2.googleapis.com/token",
-				revocation_endpoint: "https://oauth2.googleapis.com/revoke",
-				code_challenge_methods_supported: ["plain", "S256"],
-			}),
-		);
-
-		server.use(
-			http.get(
-				"https://accounts.google.com/.well-known/openid-configuration",
-				handler,
-			),
-		);
-
-		let strategy = await SubStrategy.discover<User, SubStrategy<User>>(
-			"https://accounts.google.com",
-			{
-				clientId: options.clientId,
-				clientSecret: options.clientSecret,
-				redirectURI: options.redirectURI,
-				scopes: options.scopes,
-			},
-			verify,
-		);
-
-		expect(strategy).toBeInstanceOf(SubStrategy);
-		expect(handler).toHaveBeenCalledTimes(1);
-	});
-
 	test("handles race condition of state and code verifier", async () => {
 		let verify = mock().mockImplementation(() => ({ id: "123" }));
-		let strategy = new OAuth2Strategy<User>(options, verify);
+		let strategy = new Auth0Strategy<User>(options, verify);
 
 		let responses = await Promise.all(
 			Array.from({ length: random() }, () =>

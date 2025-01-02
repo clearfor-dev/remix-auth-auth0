@@ -1,9 +1,6 @@
-# OAuth2Strategy
+# Auth0Strategy
 
-A strategy to use and implement OAuth2 framework for authentication with federated services like Google, Facebook, GitHub, etc.
-
-> [!WARNING]
-> This strategy expects the identity provider to strictly follow the OAuth2 specification. If the provider does not follow the specification and diverges from it, this strategy may not work as expected.
+A strategy to use Auth0 authentication.
 
 ## Supported runtimes
 
@@ -17,7 +14,7 @@ A strategy to use and implement OAuth2 framework for authentication with federat
 ### Installation
 
 ```bash
-npm add remix-auth-oauth2
+npm add @clearfor/remix-auth-auth0
 ```
 
 ### Directly
@@ -25,36 +22,30 @@ npm add remix-auth-oauth2
 You can use this strategy by adding it to your authenticator instance and configuring the correct endpoints.
 
 ```ts
-import { OAuthStrategy, CodeChallengeMethod } from "remix-auth-oauth2";
+import { Auth0Strategy } from "@clearfor/remix-auth-auth0";
 
 export const authenticator = new Authenticator<User>();
 
 authenticator.use(
-  new OAuth2Strategy(
+  new Auth0Strategy(
     {
-      cookie: "oauth2", // Optional, can also be an object with more options
+      cookie: "auth0", // Optional, can also be an object with more options
+
+      domain: AUTH0_DOMAIN,
 
       clientId: CLIENT_ID,
       clientSecret: CLIENT_SECRET,
 
-      authorizationEndpoint: "https://provider.com/oauth2/authorize",
-      tokenEndpoint: "https://provider.com/oauth2/token",
       redirectURI: "https://example.app/auth/callback",
 
-      tokenRevocationEndpoint: "https://provider.com/oauth2/revoke", // optional
-
       scopes: ["openid", "email", "profile"], // optional
-      codeChallengeMethod: CodeChallengeMethod.S256, // optional
     },
     async ({ tokens, request }) => {
       // here you can use the params above to get the user and return it
       // what you do inside this and how you find the user is up to you
       return await getUser(tokens, request);
     }
-  ),
-  // this is optional, but if you setup more than one OAuth2 instance you will
-  // need to set a custom name to each one
-  "provider-name"
+  )
 );
 ```
 
@@ -64,7 +55,7 @@ First, you will call the `authenticate` method with the provider name you set in
 
 ```ts
 export async function action({ request }: Route.ActionArgs) {
-  await authenticator.authenticate("provider-name", { request });
+  await authenticator.authenticate("auth0", { request });
 }
 ```
 
@@ -77,7 +68,7 @@ You will now need a route on that URI to handle the callback from the provider.
 
 ```ts
 export async function loader({ request }: Route.LoaderArgs) {
-  let user = await authenticator.authenticate("provider-name", request);
+  let user = await authenticator.authenticate("auth0", request);
   // now you have the user object with the data you returned in the verify function
 }
 ```
@@ -92,7 +83,7 @@ Once you have the `user` object returned by your strategy verify function, you c
 The strategy exposes a public `refreshToken` method that you can use to refresh the access token.
 
 ```ts
-let strategy = new OAuth2Strategy<User>(options, verify);
+let strategy = new Auth0Strategy<User>(options, verify);
 let tokens = await strategy.refreshToken(refreshToken);
 ```
 
@@ -102,7 +93,7 @@ The most common approach would be to store the refresh token in the user data an
 
 ```ts
 authenticator.use(
-  new OAuth2Strategy<User>(
+  new Auth0Strategy<User>(
     options,
     async ({ tokens, request }) => {
       let user = await getUser(tokens, request);
@@ -126,65 +117,3 @@ You can revoke the access token the user has with the provider.
 ```ts
 await strategy.revokeToken(user.accessToken);
 ```
-
-### Discovering the Provider
-
-If you want to discover the provider's endpoints, you can use the `discover` static method.
-
-```ts
-export let authenticator = new Authenticator<User>();
-
-authenticator.use(
-  await OAuth2Strategy.discover<User>(
-    "https://provider.com",
-    {
-      clientId: CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      redirectURI: "https://example.app/auth/callback",
-      scopes: ["openid", "email", "profile"], // optional
-    },
-    async ({ tokens, request }) => {
-      // here you can use the params above to get the user and return it
-      // what you do inside this and how you find the user is up to you
-      return await getUser(tokens, request);
-    }
-  )
-);
-```
-
-This will fetch the provider's configuration endpoint (`/.well-known/openid-configuration`) and grab the authorization, token and revocation endpoints from it, it will also grab the code challenge method supported and try to use S256 if it is supported.
-
-Remember this will do a fetch when then strategy is created, this will add a latency to the startup of your application.
-
-It's recommended to use this method only once and then copy the endpoints to your configuration.
-
-### Customizing the Cookie
-
-You can customize the cookie options by passing an object to the `cookie` option.
-
-```ts
-authenticator.use(
-  new OAuth2Strategy<User>(
-    {
-      cookie: {
-        name: "oauth2",
-        maxAge: 60 * 60 * 24 * 7, // 1 week
-        path: "/auth",
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-      },
-      clientId: CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      authorizationEndpoint: "https://provider.com/oauth2/authorize",
-      tokenEndpoint: "https://provider.com/oauth2/token",
-      redirectURI: "https://example.app/auth/callback",
-    },
-    async ({ tokens, request }) => {
-      return await getUser(tokens, request);
-    }
-  )
-);
-```
-
-This will set the cookie with the name `oauth2`, with a max age of 1 week, only accessible on the `/auth` path, http only, same site lax and secure if the application is running in production.
