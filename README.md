@@ -117,3 +117,7 @@ You can revoke the access token the user has with the provider.
 ```ts
 await strategy.revokeToken(user.accessToken);
 ```
+
+## Acknowledgments
+
+Based off library [remix-auth-oauth2](https://github.com/sergiodxa/remix-auth-oauth2) by [sergiodxa](https://github.com/sergiodxa)
